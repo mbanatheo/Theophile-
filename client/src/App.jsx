@@ -116,11 +116,14 @@ const money = (value, language) => new Intl.NumberFormat(language === "rw" ? "rw
   style: "currency", currency: "RWF", maximumFractionDigits: 0
 }).format(value || 0);
 
+const API_BASE = import.meta.env.VITE_API_URL || "";
+
 async function api(path, options = {}, language = "en") {
   const t = copy[language];
+  const url = API_BASE ? `${API_BASE.replace(/\/$/, "")}${path}` : `/api${path}`;
   let response;
   try {
-    response = await fetch(`/api${path}`, {
+    response = await fetch(url, {
       ...options,
       headers: { "Content-Type": "application/json", ...(options.headers || {}) }
     });

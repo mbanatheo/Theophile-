@@ -4,8 +4,18 @@ import { readDb, writeDb, nextId } from "./db.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http://127.0.0.1:5173").split(",").map(origin => origin.trim()).filter(Boolean);
 
-app.use(cors({ origin: "http://localhost:5173" }));
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true
+}));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => res.json({ status: "ok", message: "Business API is running" }));
@@ -96,4 +106,4 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ message: "Habaye ikibazo kuri server." });
 });
 
-app.listen(PORT, () => console.log(`API iri kuri http://localhost:${PORT}`));
+app.listen(PORT, "0.0.0.0", () => console.log(`API iri kuri http://0.0.0.0:${PORT}`));
