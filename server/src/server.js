@@ -1,10 +1,23 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { readDb, writeDb, nextId } from "./db.js";
+import {
+  createCustomer,
+  createProduct,
+  deleteProduct,
+  getCustomers,
+  getDashboardStats,
+  getProducts,
+  getSales,
+  recordSale
+} from "./db.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http://127.0.0.1:5173").split(",").map(origin => origin.trim()).filter(Boolean);
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http://127.0.0.1:5173")
+  .split(",")
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
 app.use(cors({
   origin(origin, callback) {
@@ -13,92 +26,140 @@ app.use(cors({
       return;
     }
     callback(new Error("Not allowed by CORS"));
-  },
-  credentials: true
+  }
 }));
 app.use(express.json());
 
-app.get("/api/health", (_req, res) => res.json({ status: "ok", message: "Business API is running" }));
-
-app.get("/api/dashboard", (_req, res) => {
-  const db = readDb();
-  const revenue = db.sales.reduce((sum, sale) => sum + sale.total, 0);
-  res.json({
-    productCount: db.products.length,
-    customerCount: db.customers.length,
-    salesCount: db.sales.length,
-    revenue,
-    lowStock: db.products.filter(product => product.stock <= 5)
-  });
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok", message: "Business API is running" });
 });
 
-app.get("/api/products", (_req, res) => res.json(readDb().products));
+app.get("/api/dashboard", async (_req, res) => {
+  try {
+    res.json(await getDashboardStats());
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to load dashboard data." });
+  }
+});
 
-app.post("/api/products", (req, res) => {
-  const { name, sku, category, price, stock } = req.body;
-  if (!name?.trim() || !sku?.trim() || !category?.trim() ||
-      !Number.isFinite(Number(price)) || Number(price) < 0 ||
-      !Number.isInteger(Number(stock)) || Number(stock) < 0) {
+app.get("/api/products", async (_req, res) => {
+  try {
+    res.json(await getProducts());
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to load products." });
+  }
+});
+
+app.post("/api/products", async (req, res) => {
+  const { name, sku, category, price, stock } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()
+    || typeof sku !== "string" || !sku.trim()
+    || typeof category !== "string" || !category.trim()
+    || !Number.isFinite(Number(price)) || Number(price) < 0
+    || !Number.isInteger(Number(stock)) || Number(stock) < 0) {
     return res.status(400).json({ message: "Tanga izina, SKU, category, igiciro na stock byemewe." });
   }
-  const db = readDb();
-  if (db.products.some(p => p.sku.toLowerCase() === sku.trim().toLowerCase())) {
-    return res.status(409).json({ message: "Iyo SKU isanzwe ikoreshwa." });
+
+  try {
+    const product = await createProduct({
+      name: name.trim(),
+      sku: sku.trim(),
+      category: category.trim(),
+      price: Number(price),
+      stock: Number(stock)
+    });
+    res.status(201).json(product);
+  } catch (error) {
+    if (error.code === "23505") {
+      return res.status(409).json({ message: "Iyo SKU isanzwe ikoreshwa." });
+    }
+    console.error(error);
+    res.status(500).json({ message: "Failed to create product." });
   }
-  const product = { id: nextId(db.products), name: name.trim(), sku: sku.trim(), category: category.trim(), price: Number(price), stock: Number(stock) };
-  db.products.push(product);
-  writeDb(db);
-  res.status(201).json(product);
 });
 
-app.delete("/api/products/:id", (req, res) => {
-  const db = readDb();
+app.delete("/api/products/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const index = db.products.findIndex(p => p.id === id);
-  if (index < 0) return res.status(404).json({ message: "Product ntiyabonetse." });
-  const [removed] = db.products.splice(index, 1);
-  writeDb(db);
-  res.json({ message: "Product yasibwe.", product: removed });
+  if (!Number.isInteger(id) || id < 1) {
+    return res.status(400).json({ message: "Product ntiyabonetse." });
+  }
+
+  try {
+    const product = await deleteProduct(id);
+    if (!product) return res.status(404).json({ message: "Product ntiyabonetse." });
+    res.json({ message: "Product yasibwe.", product });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to delete product." });
+  }
 });
 
-app.get("/api/customers", (_req, res) => res.json(readDb().customers));
-
-app.post("/api/customers", (req, res) => {
-  const { name, email = "", phone = "" } = req.body;
-  if (!name?.trim()) return res.status(400).json({ message: "Izina ry'umukiriya rirakenewe." });
-  const db = readDb();
-  const customer = { id: nextId(db.customers), name: name.trim(), email: email.trim(), phone: phone.trim() };
-  db.customers.push(customer);
-  writeDb(db);
-  res.status(201).json(customer);
+app.get("/api/customers", async (_req, res) => {
+  try {
+    res.json(await getCustomers());
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to load customers." });
+  }
 });
 
-app.get("/api/sales", (_req, res) => res.json(readDb().sales));
+app.post("/api/customers", async (req, res) => {
+  const { name, email = "", phone = "" } = req.body ?? {};
+  if (typeof name !== "string" || !name.trim()
+    || typeof email !== "string" || typeof phone !== "string") {
+    return res.status(400).json({ message: "Izina ry'umukiriya rirakenewe." });
+  }
 
-app.post("/api/sales", (req, res) => {
-  const productId = Number(req.body.productId);
-  const customerId = Number(req.body.customerId);
-  const quantity = Number(req.body.quantity);
-  if (!Number.isInteger(quantity) || quantity < 1) {
+  try {
+    const customer = await createCustomer({
+      name: name.trim(),
+      email: email.trim(),
+      phone: phone.trim()
+    });
+    res.status(201).json(customer);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to create customer." });
+  }
+});
+
+app.get("/api/sales", async (_req, res) => {
+  try {
+    res.json(await getSales());
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to load sales." });
+  }
+});
+
+app.post("/api/sales", async (req, res) => {
+  const productId = Number(req.body?.productId);
+  const customerId = Number(req.body?.customerId);
+  const quantity = Number(req.body?.quantity);
+  if (!Number.isInteger(productId) || productId < 1
+    || !Number.isInteger(customerId) || customerId < 1
+    || !Number.isInteger(quantity) || quantity < 1) {
     return res.status(400).json({ message: "Quantity igomba kuba nibura 1." });
   }
-  const db = readDb();
-  const product = db.products.find(p => p.id === productId);
-  const customer = db.customers.find(c => c.id === customerId);
-  if (!product) return res.status(404).json({ message: "Product ntiyabonetse." });
-  if (!customer) return res.status(404).json({ message: "Customer ntiyabonetse." });
-  if (product.stock < quantity) return res.status(400).json({ message: "Stock ihari ntihagije." });
 
-  product.stock -= quantity;
-  const sale = {
-    id: nextId(db.sales), productId, productName: product.name,
-    customerId, customerName: customer.name, quantity,
-    unitPrice: product.price, total: product.price * quantity,
-    date: new Date().toISOString()
-  };
-  db.sales.push(sale);
-  writeDb(db);
-  res.status(201).json(sale);
+  try {
+    const sale = await recordSale({ productId, customerId, quantity });
+    res.status(201).json(sale);
+  } catch (error) {
+    if (error.code === "PRODUCT_NOT_FOUND") {
+      return res.status(404).json({ message: "Product ntiyabonetse." });
+    }
+    if (error.code === "CUSTOMER_NOT_FOUND") {
+      return res.status(404).json({ message: "Customer ntiyabonetse." });
+    }
+    if (error.code === "INSUFFICIENT_STOCK") {
+      return res.status(400).json({ message: "Stock ihari ntihagije." });
+    }
+    console.error(error);
+    res.status(500).json({ message: "Failed to record sale." });
+  }
 });
 
 app.use((err, _req, res, _next) => {
