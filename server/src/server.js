@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import express from "express";
 import cors from "cors";
 import {
@@ -19,9 +20,25 @@ import {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const adminPassword = process.env.ADMIN_PASSWORD;
+const authTokenSecret = process.env.AUTH_TOKEN_SECRET;
+const deviceApiKey = process.env.DEVICE_API_KEY;
+const adminAuthEnabled = Boolean(adminPassword && authTokenSecret);
+const isProduction = process.env.NODE_ENV === "production";
 const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http://127.0.0.1:5173")
   .split(",").map(origin => origin.trim()).filter(Boolean);
 
+if (Boolean(adminPassword) !== Boolean(authTokenSecret)) {
+  throw new Error("Set both ADMIN_PASSWORD and AUTH_TOKEN_SECRET.");
+}
+if (isProduction && (!adminAuthEnabled || !deviceApiKey)) {
+  throw new Error("Production requires ADMIN_PASSWORD, AUTH_TOKEN_SECRET, and DEVICE_API_KEY.");
+}
+if (isProduction && (adminPassword.length < 12 || authTokenSecret.length < 32 || deviceApiKey.length < 32)) {
+  throw new Error("Production admin password must be at least 12 characters; token and device keys must be at least 32 characters.");
+}
+
+app.set("trust proxy", 1);
 app.use(cors({
   origin(origin, callback) {
     if (!origin || allowedOrigins.includes(origin)) callback(null, true);
@@ -32,9 +49,98 @@ app.use(express.json());
 
 let registrationMode = false;
 let pendingUid = null;
+const failedLogins = new Map();
+
+function createAdminToken() {
+  const payload = Buffer.from(JSON.stringify({
+    exp: Math.floor(Date.now() / 1000) + 8 * 60 * 60
+  })).toString("base64url");
+  const signature = createHmac("sha256", authTokenSecret).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function isValidAdminToken(token) {
+  if (!authTokenSecret || typeof token !== "string") return false;
+  const [payload, signature, extra] = token.split(".");
+  if (!payload || !signature || extra) return false;
+
+  const expected = createHmac("sha256", authTokenSecret).update(payload).digest("base64url");
+  const actualBytes = Buffer.from(signature);
+  const expectedBytes = Buffer.from(expected);
+  if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) return false;
+
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return Number.isInteger(claims.exp) && claims.exp > Math.floor(Date.now() / 1000);
+  } catch {
+    return false;
+  }
+}
+
+function requireAdmin(req, res, next) {
+  if (!adminAuthEnabled && !isProduction) return next();
+  const token = req.get("authorization")?.match(/^Bearer (.+)$/i)?.[1];
+  if (!isValidAdminToken(token)) {
+    return res.status(401).json({ status: "unauthorized", message: "Admin sign-in is required." });
+  }
+  next();
+}
+
+function requireDevice(req, res, next) {
+  if (!deviceApiKey && !isProduction) return next();
+  const providedKey = req.get("x-device-api-key") || "";
+  const providedBytes = Buffer.from(providedKey);
+  const expectedBytes = Buffer.from(deviceApiKey || "");
+  if (!expectedBytes.length || providedBytes.length !== expectedBytes.length
+      || !timingSafeEqual(providedBytes, expectedBytes)) {
+    return res.status(401).json({ status: "unauthorized", message: "Device authentication is required." });
+  }
+  next();
+}
+
+app.use("/api", (req, res, next) => {
+  if (req.path === "/health" || req.path === "/auth/login") return next();
+  if (["/attendance/scan", "/rfid/pending", "/device/config"].includes(req.path)) {
+    return requireDevice(req, res, next);
+  }
+  requireAdmin(req, res, next);
+});
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", message: "RFID Student API is running", database: getDatabaseStatus() });
+});
+
+app.post("/api/auth/login", (req, res) => {
+  if (!adminAuthEnabled) {
+    return res.status(503).json({ status: "auth_not_configured", message: "Admin sign-in is not configured." });
+  }
+
+  const now = Date.now();
+  const ip = req.ip;
+  let attempt = failedLogins.get(ip);
+  if (!attempt || now >= attempt.resetAt) {
+    attempt = { failures: 0, resetAt: now + 15 * 60 * 1000 };
+    failedLogins.set(ip, attempt);
+  }
+  if (attempt.failures >= 5) {
+    return res.status(429).json({ status: "rate_limited", message: "Too many sign-in attempts. Try again later." });
+  }
+
+  const providedPassword = Buffer.from(String(req.body?.password || ""));
+  const expectedPassword = Buffer.from(adminPassword);
+  const matches = providedPassword.length === expectedPassword.length
+    && timingSafeEqual(providedPassword, expectedPassword);
+  if (!matches) {
+    attempt.failures += 1;
+    return res.status(401).json({ status: "unauthorized", message: "Incorrect admin password." });
+  }
+
+  failedLogins.delete(ip);
+  res.json({ token: createAdminToken() });
+});
+
+app.get("/api/auth/session", (_req, res) => {
+  res.json({ authenticated: true });
 });
 
 app.get("/api/dashboard", async (_req, res) => {

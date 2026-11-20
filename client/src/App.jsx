@@ -5,11 +5,17 @@ import {
 } from "lucide-react";
 
 const API_BASE = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+const adminAuthEnabled = import.meta.env.VITE_ADMIN_AUTH_ENABLED === "true";
 
 async function api(path, options = {}) {
+  const token = adminAuthEnabled ? window.sessionStorage.getItem("adminToken") : null;
   const response = await fetch(API_BASE ? `${API_BASE}${path}` : `/api${path}`, {
     ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {})
+    }
   });
   const text = await response.text();
   let body = {};
@@ -17,13 +23,23 @@ async function api(path, options = {}) {
     try { body = JSON.parse(text); }
     catch { throw new Error(`Invalid server response (HTTP ${response.status}).`); }
   }
-  if (!response.ok) throw new Error(body.message || `Request failed (HTTP ${response.status}).`);
+  if (!response.ok) {
+    if (adminAuthEnabled && response.status === 401 && path !== "/auth/login") {
+      window.sessionStorage.removeItem("adminToken");
+      window.dispatchEvent(new Event("admin-auth-expired"));
+    }
+    throw new Error(body.message || `Request failed (HTTP ${response.status}).`);
+  }
   return body;
 }
 
 const formatDate = value => value ? new Date(`${value}T00:00:00`).toLocaleDateString() : "—";
 
 export default function App() {
+  const [authenticated, setAuthenticated] = useState(!adminAuthEnabled);
+  const [authLoading, setAuthLoading] = useState(adminAuthEnabled);
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
   const [page, setPage] = useState("dashboard");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [error, setError] = useState("");
@@ -56,7 +72,64 @@ export default function App() {
     finally { setRefreshing(false); }
   }
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    if (!adminAuthEnabled) return undefined;
+    if (!window.sessionStorage.getItem("adminToken")) {
+      setAuthLoading(false);
+      return undefined;
+    }
+
+    api("/auth/session")
+      .then(() => setAuthenticated(true))
+      .catch(() => {
+        window.sessionStorage.removeItem("adminToken");
+        setAuthenticated(false);
+      })
+      .finally(() => setAuthLoading(false));
+    return undefined;
+  }, []);
+
+  useEffect(() => {
+    function handleAuthExpired() {
+      setAuthenticated(false);
+      setPassword("");
+      setRegistrationMode(false);
+      setPendingUid("");
+      setAuthError("Your session expired. Sign in again.");
+    }
+    window.addEventListener("admin-auth-expired", handleAuthExpired);
+    return () => window.removeEventListener("admin-auth-expired", handleAuthExpired);
+  }, []);
+
+  useEffect(() => {
+    if (authenticated && !authLoading) refresh();
+  }, [authenticated, authLoading]);
+
+  async function signIn(event) {
+    event.preventDefault();
+    setAuthError("");
+    try {
+      const session = await api("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ password })
+      });
+      window.sessionStorage.setItem("adminToken", session.token);
+      setPassword("");
+      setAuthenticated(true);
+    } catch (e) {
+      setAuthError(e.message);
+    }
+  }
+
+  function signOut() {
+    window.sessionStorage.removeItem("adminToken");
+    setAuthenticated(false);
+    setPassword("");
+    setRegistrationMode(false);
+    setPendingUid("");
+    setError("");
+    setNotice("");
+  }
 
   useEffect(() => {
     if (!registrationMode) return undefined;
@@ -171,6 +244,31 @@ export default function App() {
     setPage(id); setMobileOpen(false); setError(""); setNotice("");
   }
 
+  if (authLoading) {
+    return <div className="auth-page"><div className="auth-panel"><h1>Checking your session...</h1></div></div>;
+  }
+  if (!authenticated) {
+    return <div className="auth-page">
+      <form className="auth-panel" onSubmit={signIn}>
+        <div className="brand-mark">RF</div>
+        <span className="eyebrow">RFID CAMPUS</span>
+        <h1>Administrator sign in</h1>
+        <p>Enter the admin password to manage students and attendance.</p>
+        {authError && <div className="alert error">{authError}</div>}
+        <label htmlFor="admin-password">Admin password</label>
+        <input
+          id="admin-password"
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={event => setPassword(event.target.value)}
+          required
+        />
+        <button className="primary-btn" type="submit">Sign in</button>
+      </form>
+    </div>;
+  }
+
   return <div className="app-shell">
     <aside className={`sidebar ${mobileOpen ? "open" : ""}`}>
       <div className="brand">
@@ -187,6 +285,7 @@ export default function App() {
       <div className="sidebar-bottom">
         <div className="avatar">AD</div>
         <div><b>Administrator</b><small>Campus portal</small></div>
+        {adminAuthEnabled && <button className="logout-btn" onClick={signOut}>Sign out</button>}
       </div>
     </aside>
     {mobileOpen && <button className="scrim" aria-label="Close menu" onClick={() => setMobileOpen(false)}/>}
