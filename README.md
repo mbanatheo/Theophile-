@@ -26,30 +26,26 @@ For Supabase, run `server/supabase/schema.sql`, set `SUPABASE_URL` and
 `SUPABASE_SERVICE_ROLE_KEY` in `server/.env`, and keep them out of source control.
 Local development leaves admin authentication disabled unless credentials are set.
 
-## Deploy frontend and backend
+## Deploy frontend and backend on Render
 
-Use **Supabase** for persistent PostgreSQL storage, **Render** for the Express API,
-and **Vercel** for the React frontend. The local JSON file is not suitable for
-production persistence.
+The Render web service serves the React frontend and Express API from one URL.
+Supabase provides persistent PostgreSQL storage; the local JSON file is not
+suitable for production persistence.
 
 1. Create a Supabase project and run `server/supabase/schema.sql` in its SQL editor.
-2. In Render, create a Web Service from this GitHub repository with root directory
-   `server`, build command `npm install`, and start command `npm start`. Set:
-   - `NODE_ENV=production`
-   - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from Supabase (server only)
-   - `ADMIN_PASSWORD` to a strong password of at least 12 characters
-   - `AUTH_TOKEN_SECRET` and `DEVICE_API_KEY` to separate random values of at least
-     32 characters each
-   - `CORS_ORIGIN` to the exact deployed Vercel origin
-3. In Vercel, import the same repository and set root directory to `client`.
-   Set `VITE_API_URL` to the Render service origin (without a trailing slash) and
-   `VITE_ADMIN_AUTH_ENABLED=true`, then deploy.
-4. Sign in using the `ADMIN_PASSWORD` configured in Render. The API does not expose
-   a public signup route. Keep the Supabase service-role key only in Render's
-   server-side environment variables; never add real secrets to GitHub.
-5. To connect an ESP32 to the hosted API, use the HTTPS Render origin for `API_HOST`
-   and set its `DEVICE_API_KEY` to the same value configured in Render. Keep real
-   Wi-Fi credentials and device keys out of committed firmware.
+2. Push this repository to GitHub, then in Render choose **New → Blueprint** and
+   connect the repository. Render reads [render.yaml](render.yaml), builds the
+   frontend, and starts the API as one web service.
+3. During setup, enter `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a strong
+   `ADMIN_PASSWORD` of at least 12 characters. Render generates separate
+   `AUTH_TOKEN_SECRET` and `DEVICE_API_KEY` values. Keep all secrets in Render;
+   never add them to GitHub or the frontend.
+4. When the deployment is healthy, open the service's `onrender.com` URL and sign
+   in with the configured admin password. The API is served at `/api`; the health
+   endpoint is `/api/health`.
+5. To connect an ESP32, set `API_HOST` in the firmware to the HTTPS Render URL and
+   set `DEVICE_API_KEY` to the generated Render value locally. Do not commit real
+   Wi-Fi credentials or device keys.
 
 Production startup fails when required authentication or device credentials are
 missing. Admin sessions expire after eight hours; repeated incorrect sign-ins are

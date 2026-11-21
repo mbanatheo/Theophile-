@@ -1,5 +1,7 @@
 import "dotenv/config";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import {
@@ -20,12 +22,15 @@ import {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const clientDist = path.join(projectRoot, "client", "dist");
 const adminPassword = process.env.ADMIN_PASSWORD;
 const authTokenSecret = process.env.AUTH_TOKEN_SECRET;
 const deviceApiKey = process.env.DEVICE_API_KEY;
 const adminAuthEnabled = Boolean(adminPassword && authTokenSecret);
 const isProduction = process.env.NODE_ENV === "production";
-const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http://127.0.0.1:5173")
+const corsOrigin = process.env.CORS_ORIGIN;
+const allowedOrigins = (corsOrigin || "http://localhost:5173,http://127.0.0.1:5173")
   .split(",").map(origin => origin.trim()).filter(Boolean);
 
 if (Boolean(adminPassword) !== Boolean(authTokenSecret)) {
@@ -39,12 +44,14 @@ if (isProduction && (adminPassword.length < 12 || authTokenSecret.length < 32 ||
 }
 
 app.set("trust proxy", 1);
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) callback(null, true);
-    else callback(new Error("Not allowed by CORS"));
-  }
-}));
+if (!isProduction || corsOrigin) {
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) callback(null, true);
+      else callback(new Error("Not allowed by CORS"));
+    }
+  }));
+}
 app.use(express.json());
 
 let registrationMode = false;
@@ -277,6 +284,15 @@ app.get("/api/device/config", (_req, res) => {
 app.use("/api", (_req, res) => {
   res.status(404).json({ status: "not_found", message: "API endpoint not found." });
 });
+
+if (isProduction) {
+  app.use(express.static(clientDist));
+  app.get("*", (_req, res, next) => {
+    res.sendFile(path.join(clientDist, "index.html"), error => {
+      if (error) next(error);
+    });
+  });
+}
 
 app.use((err, _req, res, _next) => {
   console.error(err);

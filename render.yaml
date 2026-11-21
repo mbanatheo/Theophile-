@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: theophile-rfid-attendance
+    runtime: node
+    plan: free
+    buildCommand: npm run install:all && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: VITE_ADMIN_AUTH_ENABLED
+        value: "true"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: AUTH_TOKEN_SECRET
+        generateValue: true
+      - key: DEVICE_API_KEY
+        generateValue: true
